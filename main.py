@@ -102,7 +102,10 @@ def _publish_overlay(
                 bbox=(int(x0), int(y0), int(x1), int(y1)),
             )
         )
-    overlay.show_cards(items)
+    # O F9 atualiza só o monitor escaneado (scope); os cartões dos demais
+    # monitores continuam no ar. A API legado show_cards publicava sem
+    # scope (todos os monitores) e era a causa deste caminho apagar todos.
+    overlay.publish(items, scope)
 
 
 def main() -> int:
