@@ -1,0 +1,8 @@
+mss>=9.0
+numpy>=1.26,<3
+paddlepaddle>=3.0
+paddleocr>=3.7,<4
+jieba>=0.42
+pypinyin>=0.51
+requests>=2.31
+PyQt6>=6.6
