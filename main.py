@@ -14,8 +14,8 @@ from chainese.hotkeys import (
     VK_Q,
 )
 from chainese.ocr import DetectedText, TextRecognizer
-from chainese.overlay import CardItem, Overlay
-from chainese.segment import pinyin_line, warmup as segment_warmup
+from chainese.overlay import CardItem, Overlay, VocabItem
+from chainese.segment import pinyin_line, vocab_words, warmup as segment_warmup
 from chainese.translate import OllamaOffline, Translator
 
 logging.basicConfig(
@@ -74,11 +74,47 @@ def _translate_results(
     return translations
 
 
+def _build_vocab(
+    translator: Translator, results: list[DetectedText]
+) -> list[VocabItem]:
+    """Monta o painel de vocabulário: palavras únicas + pinyin + tradução.
+
+    As palavras vêm de `segment.vocab_words` (ordem de 1ª ocorrência,
+    só CJK, com limite do config) e a tradução é UMA chamada em lote ao
+    Ollama (ver Translator.translate_words). Sem Ollama o painel segue
+    com palavra + pinyin e "?" na tradução (degradação graciosa, como
+    nos cartões).
+    """
+    if not results:
+        return []
+    words = vocab_words([r.text for r in results], limit=config.VOCAB_MAX_WORDS)
+    if not words:
+        return []
+    translations: dict[str, str] = {}
+    if translator.available:
+        try:
+            translations = translator.translate_words([w.word for w in words])
+        except OllamaOffline as exc:
+            # Mesmo contrato dos cartões: Ollama caiu -> sem tradução pelo
+            # resto da sessão, sem crash, aviso único.
+            translator.available = False
+            logger.warning("Tradução de palavras desativada nesta sessão: %s", exc)
+    return [
+        VocabItem(
+            word=w.word,
+            pinyin=w.pinyin,
+            translation=translations.get(w.word, ""),
+        )
+        for w in words
+    ]
+
+
 def _publish_overlay(
     overlay: Overlay,
     results: list[DetectedText],
     translations: dict[str, str],
     scope: tuple[int, int, int, int] | None = None,
+    vocab: list[VocabItem] | None = None,
 ) -> None:
     """Publica os cartões no overlay (ou esconde os do monitor escaneado).
 
@@ -105,7 +141,7 @@ def _publish_overlay(
     # O F9 atualiza só o monitor escaneado (scope); os cartões dos demais
     # monitores continuam no ar. A API legado show_cards publicava sem
     # scope (todos os monitores) e era a causa deste caminho apagar todos.
-    overlay.publish(items, scope)
+    overlay.publish(items, scope, vocab)
 
 
 def main() -> int:
@@ -162,9 +198,10 @@ def main() -> int:
             scope = (reg["left"], reg["top"], reg["width"], reg["height"])
             results = recognizer.recognize(frame, origin=(ox, oy))
             translations = _translate_results(translator, results)
+            vocab = _build_vocab(translator, results)
             elapsed_ms = (time.perf_counter() - t0) * 1000
             print_report(results, elapsed_ms, translations)
-            _publish_overlay(overlay, results, translations, scope)
+            _publish_overlay(overlay, results, translations, scope, vocab)
 
         except Exception:
             # logger.exception: traceback completo no log (diagnóstico sem

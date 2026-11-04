@@ -19,6 +19,7 @@ Nota de threads:
 from __future__ import annotations
 
 import logging
+import re
 from collections import OrderedDict
 
 import requests
@@ -38,6 +39,28 @@ _SYSTEM_PROMPT = (
     "like a game subtitle. Reply with ONLY the translation. "
     "No quotes, no explanations, no Chinese."
 )
+
+# Prompt para o painel de vocabulário (palavra a palavra). Em INGLÊS de
+# propósito, como o de linhas: o 3b segue meta-instruções em inglês com
+# mais fiabilidade. A saída é uma lista numerada "n. tradução" para o
+# painel montar coluna vertical.
+_WORDS_SYSTEM_PROMPT = (
+    "You are a Mandarin teacher for Brazilian players. "
+    "Translate each Chinese word the user gives to a short Brazilian Portuguese "
+    "equivalent (1-3 words), like a game glossary. "
+    "Reply with ONLY a numbered list, one line per input word, in the SAME order, "
+    "formatted as '<number>. <translation>'. "
+    "No quotes, no explanations, no Chinese, no extra lines."
+)
+
+
+# Linha numerada da resposta de palavras ("3. você"): o separador aceita
+# ponto (formato pedido no prompt) e as variantes que o 3b às vezes emite.
+_WORDS_LINE_RE = re.compile(r"^\s*(\d+)\s*[.、)）:：]\s*(.+?)\s*$")
+# Ideogramas: filtra o caso do modelo "traduzir" ecoando o próprio
+# chinês (palavra desconhecida). Mesmo intervalo do is_cjk do ocr.py,
+# em regex para não importar o paddle aqui.
+_CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 
 
 class OllamaOffline(RuntimeError):
@@ -116,6 +139,66 @@ class Translator:
 
         self._cache_set(text, translation)
         return translation
+
+    def translate_words(self, words: list[str]) -> dict[str, str]:
+        """Traduz palavras únicas (vocabulário) em UMA chamada em lote.
+
+        :param words: palavras já únicas e ordenadas (ver
+                      segment.vocab_words).
+        :return: mapa palavra -> tradução. Palavras que o modelo não
+                 respondeu (ou ecoou em chinês) ficam fora do mapa — o
+                 painel mostra "?" para elas, sem parecer erro de layout.
+        Palavras em cache nem vão no lote. Lança OllamaOffline se o
+        servidor cair (o painel segue com palavra + pinyin).
+        """
+        if not words:
+            return {}
+        fresh: list[str] = []
+        for word in words:
+            if self._cache_get(word) is None:
+                fresh.append(word)
+        if not fresh:
+            return {w: self._cache_get(w) or "" for w in words}
+
+        # "1. 我\n2. 爱" -> o modelo responde na mesma ordem numerada.
+        numbered = "\n".join(f"{i}. {w}" for i, w in enumerate(fresh, start=1))
+        try:
+            r = self._session.post(
+                f"{self._base}/api/chat",
+                json={
+                    "model": self._model,
+                    "stream": False,
+                    "options": {"temperature": 0.1, "num_predict": 200},
+                    "messages": [
+                        {"role": "system", "content": _WORDS_SYSTEM_PROMPT},
+                        {"role": "user", "content": numbered},
+                    ],
+                },
+                timeout=self._timeout,
+            )
+            r.raise_for_status()
+        except requests.exceptions.RequestException as exc:
+            raise OllamaOffline(f"Ollama não respondeu: {exc}") from exc
+
+        data = r.json()
+        content = str((data.get("message") or {}).get("content", "")).strip()
+        out: dict[str, str] = {}
+        for line in content.splitlines():
+            m = _WORDS_LINE_RE.match(line)
+            if not m:
+                continue
+            idx = int(m.group(1))
+            translation = m.group(2)
+            # Só aceita o índice do lote (o modelo pode renumerar) e
+            # descarta "traduções" que são o próprio chinês.
+            if not 1 <= idx <= len(fresh):
+                continue
+            if _CJK_RE.search(translation):
+                continue
+            out[fresh[idx - 1]] = translation
+        for word, translation in out.items():
+            self._cache_set(word, translation)
+        return out
 
     # ------------------------------------------------------------------
     # Cache LRU (sem lock: ver nota de threads no topo do módulo)

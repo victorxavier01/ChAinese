@@ -61,6 +61,14 @@ OLLAMA_TIMEOUT_S: float = 30.0    # tempo máximo por tradução (segundos)
 TRANSLATE_CACHE_MAX: int = 512    # linhas únicas mantidas em cache (LRU)
 
 # ---------------------------------------------------------------------------
+# Painel de vocabulário (overlay, canto inferior esquerdo)
+# ---------------------------------------------------------------------------
+# Máximo de palavras no painel (ordem de 1ª ocorrência no diálogo): ele
+# é uma coluna vertical no canto do ecrã, com altura finita. Mais que
+# isso viraria um banner lateral a tapar o jogo.
+VOCAB_MAX_WORDS: int = 10
+
+# ---------------------------------------------------------------------------
 # Controlo de CPU (opcional)
 # ---------------------------------------------------------------------------
 # Threads usadas pelo inferência (Paddle/oneDNN).

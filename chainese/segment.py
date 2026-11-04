@@ -65,6 +65,28 @@ def pinyin_line(text: str) -> str:
     return " ".join(w.pinyin for w in analyze(text))
 
 
+def vocab_words(lines: list[str], limit: int = 10) -> list[Word]:
+    """Palavras únicas das linhas (ordem de 1ª ocorrência), só CJK.
+
+    Alimenta o painel de vocabulário do overlay (canto inferior
+    esquerdo): pontuação e ruído latino/numérico do OCR ficam de fora
+    (só contam tokens com pelo menos um ideograma); o limite é porque o
+    painel tem altura finita.
+    """
+    seen: set[str] = set()
+    words: list[Word] = []
+    for line in lines:
+        for word in analyze(line):
+            tok = word.word.strip()
+            if not tok or tok in seen or not any(is_cjk(ch) for ch in tok):
+                continue
+            seen.add(tok)
+            words.append(word)
+            if len(words) >= limit:
+                return words
+    return words
+
+
 def warmup() -> None:
     """Absorve o custo da 1ª chamada (dicionário jieba + lookup pinyin)."""
     list(jieba.cut("你好世界", HMM=True))
