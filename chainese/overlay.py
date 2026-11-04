@@ -2,32 +2,44 @@
 Overlay visual (PyQt6): cartões de tradução flutuando sobre o jogo.
 
 Arquitetura (prioridade: custo zero em repouso + nunca atrapalhar o jogo):
-    - Uma janela por monitor: frameless, fundo transparente, always-on-top e
-      "input-transparent" (click-through): mouse e teclado atravessam a
-      janela e vão para o jogo. Nada do overlay pode ser clicado. Ela só
-      existe enquanto há cartões naquele monitor.
-    - As janelas vivem na thread principal (loop de eventos do Qt). O worker
-      do F9 (outra thread) publica os resultados via sinal Qt; a conexão
-      queued faz a passagem entre threads de forma segura. Nenhuma chamada
-      Qt acontece fora da thread principal.
-    - Os cartões são ancorados na bbox do OCR (mesma base de coordenadas
+    - Uma janela POR CARTÃO: frameless, OPAÇA, do tamanho exato do cartão,
+      always-on-top e "input-transparent" (click-through): mouse e teclado
+      atravessam a janela e vão para o jogo. Nada do overlay pode ser
+      clicado. A janela também não aceita foco nem é ativada ao aparecer,
+      para o jogo não perder o foco quando o cartão surge.
+    - OPAÇA de propósito (teste contra o bug "o cartão aparece e some"):
+      a antiga janela full-monitor com WA_TranslucentBackground só se
+      apresenta via UpdateLayeredWindow (superfície layered de alpha por
+      pixel), e o DWM desta máquina (iGPU Intel + EDR) deixava de compor
+      essa superfície ~400 ms após a mapeação. A janela opaca segue o
+      caminho NORMAL de composição do DWM (sem layered surface); os cantos
+      arredondados vêm do SetWindowRgn (GDI), não de alpha por pixel.
+    - As janelas vivem na thread principal (loop de eventos do Qt). O
+      worker do F9 (outra thread) publica os resultados via sinal Qt; a
+      conexão queued faz a passagem entre threads de forma segura. Nenhuma
+      chamada Qt acontece fora da thread principal.
+    - A janela é ancorada na bbox do OCR (mesma base de coordenadas
       globais do mss): o canto superior esquerdo do cartão é alinhado ao
       canto (x0, y0) da bbox, ou seja, o cartão fica exatamente sobre a
-      linha de texto original.
-    - A cada F9 as janelas antigas são descartadas e criadas novas com o
-      cartão já desenhado no primeiro show() (nesta máquina só a primeira
-      mapeação com conteúdo apresenta de forma confiável), mais pulsos de
-      SetWindowPos (ver _MonitorWindow.reassert): o DWM desta máquina
-      entra em fases em que não apresenta a superfície da janela sozinho,
-      e a chamada força a reapresentação.
-    - Enquanto os cartões estão visíveis, um timer de 1 s reafirma a
-      apresentação (SetWindowPos + pulso dos atributos layered; o DWM
-      pode parar de apresentar de novo). O timer só roda com cartões no
-      ar: custo zero em repouso.
+      linha de texto original, mantido dentro do monitor (margem de 8 px).
+    - A cada F9 as janelas antigas do monitor escaneado são descartadas e
+      criadas novas com o cartão já desenhado no primeiro show() (criar a
+      janela já com o conteúdo continua a ser a forma que se apresentou
+      com consistência nesta máquina).
+    - Reafirmação (ver _CardWindow.reassert): pulsos iniciais + um timer
+      de 1 s, só enquanto há cartões no ar. Mantidos como rede de
+      segurança enquanto a apresentação opaca é validada; se a
+      estabilidade se confirmar, são removidos (custo zero em repouso é a
+      meta).
+    - Os timers de pulso são filhos da própria janela: morrem junto com
+      ela, então nunca disparam em um objeto Qt já destruído (isso
+      abortaria o processo).
     - Cada F9 atualiza só o monitor escaneado: F9 sem chinês num monitor
       esconde os cartões daquele monitor e preserva os dos demais.
     - Em repouso não há timer nem animação: o custo de CPU entre F9 é
       praticamente zero.
+    - Diagnóstico: se uma janela for escondida por fora do app (jogo
+      retomando a tela, DWM, outro programa), aparece um WARNING no log.
     - DPI: assume escala 100% (mss e Qt usam pixels físicos na máquina do
       usuário). Multi-escala fica para o passo 5.
 """
@@ -36,7 +48,6 @@ from __future__ import annotations
 
 import ctypes
 import logging
-from ctypes import wintypes
 from dataclasses import dataclass
 
 from PyQt6.QtCore import QObject, QRect, Qt, QTimer, pyqtSignal
@@ -52,29 +63,40 @@ from PyQt6.QtWidgets import (
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Win32: reafirmar o topmost (ver _MonitorWindow.reassert)
+# Win32: reafirmar a apresentação (ver _CardWindow.reassert) e cantos
+# arredondados (ver _CardWindow._round_corners)
 # ---------------------------------------------------------------------------
 user32 = ctypes.windll.user32
-# SetWindowPos: uma chamada com SWP_NOZORDER (hWndInsertAfter ignorado,
-# sem mexer na posição real) já força o DWM a revalidar a janela e
-# reapresentar a superfície. Verificado empiricamente numa fase ruim do
-# DWM, em que o show() sozinho deixava a janela invisível: esta chamada
-# fez o cartão aparecer (mais de 1900 pixels de diferença na tela).
-# Não usar HWND_TOPMOST (-1) aqui: ctypes não converte -1 nem o valor
-# 64 bits equivalente (ArgumentError), e exceção dentro do slot do Qt
-# aborta o processo inteiro.
+gdi32 = ctypes.windll.gdi32
+# SetWindowPos: SWP_NOMOVE|SWP_NOSIZE|SWP_NOZORDER com (0,0,0,0) força o
+# DWM a revalidar a janela sem mexer em posição/tamanho/ordem z.
+# IMPORTANTE: sem SWP_NOMOVE|SWP_NOSIZE os argumentos 0,0,0,0 MOVIAM a
+# janela para (0,0) — bug encontrado na fase opaca (o cartão saltava para
+# o canto do desktop a cada pulso).
+# Não usar HWND_TOPMOST (-1) como hWndInsertAfter: ctypes não converte -1
+# nem o valor 64 bits equivalente (ArgumentError), e exceção dentro do
+# slot do Qt aborta o processo inteiro.
 _SWP_INSERT_DUMMY = 1
+_SWP_NOSIZE = 0x0001
+_SWP_NOMOVE = 0x0002
 _SWP_NOZORDER = 0x0004
 _SWP_NOACTIVATE = 0x0010
 _SWP_NOOWNERCHANGING = 0x0020
-_LWA_ALPHA = 0x0002
-user32.SetLayeredWindowAttributes.argtypes = [
-    wintypes.HWND,
-    wintypes.DWORD,
-    ctypes.c_byte,
-    wintypes.DWORD,
-]
-user32.SetLayeredWindowAttributes.restype = wintypes.BOOL
+# HGDIOBJ/HHRGN são handles de 64 bits: sem restype/argtypes explícitos o
+# ctypes corrói o valor (DeleteObject/SetWindowRgn receberiam um handle
+# truncado). Definido UMA vez, no arranque do módulo.
+gdi32.CreateRoundRectRgn.restype = ctypes.c_void_p
+gdi32.DeleteObject.argtypes = [ctypes.c_void_p]
+user32.SetWindowRgn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
+
+# Raio dos cantos da janela (0 = cantos retos, fallback para debug).
+# Mesma radiação do QSS border-radius do cartão (6 px); o diâmetro da
+# elipse do CreateRoundRectRgn é o dobro.
+_CORNER_RADIUS_PX = 6
+
+# Pulsos logo após o show() (ms) e período do keepalive (ms).
+_PULSE_DELAYS_MS = (300, 1000, 2000)
+_KEEPALIVE_MS = 1000
 
 
 @dataclass
@@ -142,104 +164,179 @@ class _Card(QFrame):
         self.adjustSize()
 
 
-class _MonitorWindow(QWidget):
-    """Janela de cobertura do monitor: transparente, top-most e click-through."""
+class _CardWindow(QWidget):
+    """Janela OPAÇA do tamanho exato do cartão: top-most e click-through.
 
-    def __init__(self, screen: QScreen, items: list[CardItem]) -> None:
+    Substitui a antiga janela full-monitor com WA_TranslucentBackground:
+    a superfície layered (alpha por pixel) era deixada de compor pelo DWM
+    desta máquina centenas de ms após a mapeação. Janela opaca vai pelo
+    caminho normal de composição; os cantos arredondados vêm do
+    SetWindowRgn (a área fora da região não é composta, sem layered
+    window, sem alpha por pixel).
+    """
+
+    def __init__(self, screen: QScreen, item: CardItem) -> None:
         super().__init__()
-        self.setGeometry(screen.geometry())
+        self._label = screen.name()
+        # True quando o PRÓPRIO app está fechando a janela (dispose): o
+        # hideEvent só vira WARNING quando a janela some por fora.
+        self._closing = False
+        # Fundo sólido escuro (a versão opaca do antigo rgba(14,16,22,212)):
+        # cobre a janela inteira — nem 1 px à cor do palete por omissão.
+        self.setObjectName("chOverlay")
+        self.setStyleSheet("QWidget#chOverlay { background-color: #0e1016; }")
         # Frameless + Tool: sem borda/título e fora da taskbar.
         # WindowStaysOnTopHint: fica acima do jogo (borderless windowed).
         # WindowTransparentForInput: no Win32 vira WS_EX_TRANSPARENT
         # (click-through): cliques e mouse atravessam e vão para o jogo.
+        # WindowDoesNotAcceptFocus + WA_ShowWithoutActivating: a janela
+        # não é ativada ao aparecer, então o jogo mantém o foco (um jogo
+        # que perde o foco pode minimizar, pausar ou retomar a tela).
+        # Sem WA_TranslucentBackground de propósito: ver docstring da
+        # classe (janela opaca = composição normal do DWM).
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
             | Qt.WindowType.Tool
             | Qt.WindowType.WindowTransparentForInput
+            | Qt.WindowType.WindowDoesNotAcceptFocus
         )
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self._cards: list[_Card] = []
-        self._keepalive: QTimer | None = None
-        # O cartão é desenhado ANTES do primeiro show(): nesta máquina o
-        # DWM só apresenta de forma confiável a superfície mapeada já com
-        # conteúdo. Janela mapeada vazia e depois remapeada (hide/show)
-        # com conteúdo falha em reaparecer (verificado empiricamente).
-        self.set_cards(items)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+
+        # O cartão existe ANTES do primeiro show() (a janela é criada já
+        # com o conteúdo desenhado, a única forma que se apresentou com
+        # consistência nesta máquina).
+        card = _Card(item, self)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(card)
+        # A janela tem EXATAMENTE o tamanho do cartão (o layout preenche).
+        self.setFixedSize(card.width(), card.height())
+
+        # Âncora: canto (x0, y0) da bbox do OCR em coordenadas globais,
+        # mantido dentro do monitor (margem de 8 px).
+        geo = screen.geometry()
+        cw, ch = self.width(), self.height()
+        x = max(geo.x() + 8, min(item.bbox[0], geo.x() + geo.width() - cw - 8))
+        y = max(geo.y() + 8, min(item.bbox[1], geo.y() + geo.height() - ch - 8))
+        self.move(x, y)
+
+        # Timers filhos da janela: são destruídos com ela, então nunca
+        # disparam em um objeto Qt já destruído.
+        self._pulses: list[QTimer] = []
+        for delay in _PULSE_DELAYS_MS:
+            pulse = QTimer(self)
+            pulse.setSingleShot(True)
+            pulse.setInterval(delay)
+            pulse.timeout.connect(self.reassert)
+            self._pulses.append(pulse)
+        self._keepalive = QTimer(self)
+        self._keepalive.setInterval(_KEEPALIVE_MS)
+        self._keepalive.timeout.connect(self.reassert)
+
         self.show()
+        self._round_corners()
 
-    def set_cards(self, items: list[CardItem]) -> None:
-        """Desenha os cartões ancorados nas bboxes (posições locais)."""
-        geo = self.geometry()
-        for card in self._cards:
-            card.deleteLater()
-        self._cards.clear()
+    def _round_corners(self) -> None:
+        """Arredonda os cantos da janela com SetWindowRgn (GDI).
 
-        for item in items:
-            card = _Card(item, self)
-            self._cards.append(card)
-
-            x0, y0, x1, y1 = item.bbox
-            cw, ch = card.width(), card.height()
-            # Exatamente sobre o texto original: o canto superior esquerdo
-            # do cartão é alinhado ao canto (x0, y0) da bbox do OCR, ou
-            # seja, o cartão cobre a linha extraída.
-            x = x0 - geo.x()
-            y = y0 - geo.y()
-            # Mantém o cartão dentro do monitor.
-            x = max(8, min(x, geo.width() - cw - 8))
-            y = max(8, min(y, geo.height() - ch - 8))
-            card.move(x, y)
+        A área fora da região deixa de ser composta pelo DWM — sem janela
+        layered e sem alpha por pixel. Mesma radiação do QSS
+        border-radius: raio 6 px -> elipse de 12 px de CreateRoundRectRgn.
+        Nunca levanta exceção: roda no arranque da janela (exceção aqui
+        abortaria o processo).
+        """
+        if _CORNER_RADIUS_PX <= 0:
+            return
+        try:
+            region = gdi32.CreateRoundRectRgn(
+                0,
+                0,
+                self.width(),
+                self.height(),
+                2 * _CORNER_RADIUS_PX,
+                2 * _CORNER_RADIUS_PX,
+            )
+            if not region:
+                return
+            user32.SetWindowRgn(int(self.winId()), region, True)
+            gdi32.DeleteObject(region)
+        except Exception:
+            logger.exception(
+                "Overlay: falha no SetWindowRgn de %s (ignorada)", self._label
+            )
 
     def reassert(self) -> None:
-        """Força o DWM a reapresentar esta janela.
+        """Reafirma a apresentação desta janela no DWM (rede de segurança).
 
-        O DWM desta máquina (iGPU Intel + EDR) passa por fases em que não
-        apresenta a superfície da janela sozinho: a janela existe, é
-        topmost, e os cartões já foram desenhados, mas nada aparece na
-        tela. Uma chamada SetWindowPos (mesmo com SWP_NOZORDER, sem mudar
-        a ordem Z) força o DWM a revalidar a janela e reapresentar a
-        superfície; o cartão aparece. Verificado empiricamente numa fase
-        ruim, em que o show() sozinho deixava a janela invisível: esta
-        chamada fez o cartão aparecer (mais de 1900 pixels de diferença
-        na captura de tela).
+        Com a janela opaca o caminho de apresentação é o normal do DWM;
+        os pulsos continuam a correr enquanto a estabilidade é validada
+        (ver docstring do módulo). Dois passos:
 
-        Custo: uma chamada Win32 por invocação; zero em repouso.
+        1. SetWindowPos com SWP_NOMOVE|SWP_NOSIZE|SWP_NOZORDER: força o
+           DWM a revalidar a janela sem mexer em posição/tamanho/ordem z.
+        2. update(): pede um repaint do Qt.
+
+        NÃO chamar SetLayeredWindowAttributes aqui: isso converte a janela
+        para uma superfície layered de "alpha constante" e devolve-nos o
+        bug original (o cartão some).
+
+        Nunca levanta exceção: roda em slot do Qt (exceção não tratada em
+        slot aborta o processo).
+
+        Custo: uma chamada Win32 + um repaint por invocação; zero em
+        repouso.
         """
-        hwnd = int(self.winId())
-        user32.SetWindowPos(
-            hwnd,
-            _SWP_INSERT_DUMMY,
-            0,
-            0,
-            0,
-            0,
-            _SWP_NOZORDER | _SWP_NOACTIVATE | _SWP_NOOWNERCHANGING,
-        )
-        # Segundo truque (também comprovado na bateria de testes): o pulso
-        # nos atributos da janela layered força a revalidação do DWM.
-        # Juntos, maximizam a chance de a superfície reaparecer em cada
-        # pulso do keepalive.
-        user32.SetLayeredWindowAttributes(hwnd, 0, 254, _LWA_ALPHA)
-        user32.SetLayeredWindowAttributes(hwnd, 0, 255, _LWA_ALPHA)
+        if self._closing:
+            return
+        try:
+            hwnd = int(self.winId())
+            user32.SetWindowPos(
+                hwnd,
+                _SWP_INSERT_DUMMY,
+                0,
+                0,
+                0,
+                0,
+                _SWP_NOSIZE
+                | _SWP_NOMOVE
+                | _SWP_NOZORDER
+                | _SWP_NOACTIVATE
+                | _SWP_NOOWNERCHANGING,
+            )
+            self.update()
+        except Exception:
+            logger.exception("Overlay: falha no reassert de %s (ignorada)", self._label)
 
-    def _start_keepalive(self) -> None:
-        """Timer de 1 s que reafirma a apresentação enquanto houver cartões.
+    def start_presenting(self) -> None:
+        """Dispara os pulsos iniciais e o keepalive de 1 s.
 
-        O DWM desta máquina pode parar de apresentar a janela de novo até
-        depois que os pulsos iniciais acabam; a reafirmação periódica faz o
-        cartão reaparecer em menos de 1 s. Só roda com cartões visíveis
-        (custo zero em repouso).
+        O keepalive só roda com cartões visíveis (custo zero em repouso).
         """
-        if self._keepalive is None:
-            self._keepalive = QTimer(self)
-            self._keepalive.setInterval(1000)
-            self._keepalive.timeout.connect(self.reassert)
+        for pulse in self._pulses:
+            pulse.start()
         self._keepalive.start()
 
-    def _stop_keepalive(self) -> None:
-        if self._keepalive is not None:
-            self._keepalive.stop()
+    def stop_presenting(self) -> None:
+        for pulse in self._pulses:
+            pulse.stop()
+        self._keepalive.stop()
+
+    def dispose(self) -> None:
+        """Fecha e descarta a janela (chamado pelo Overlay)."""
+        self._closing = True
+        self.stop_presenting()
+        self.close()
+        self.deleteLater()
+
+    def hideEvent(self, event) -> None:  # noqa: N802 (nome do Qt)
+        if not self._closing:
+            logger.warning(
+                "Overlay: a janela de %s foi ESCONDIDA por fora do app "
+                "(jogo retomando a tela? outro programa?)",
+                self._label,
+            )
+        super().hideEvent(event)
 
 
 class Overlay:
@@ -256,16 +353,15 @@ class Overlay:
         self._app = QApplication.instance() or QApplication([])
         self._bridge = _Bridge()
         self._bridge.cards_updated.connect(self._show_cards)
-        self._bridge.quit_app.connect(self._app.quit)
-        # Nenhuma janela no arranque: ela é criada a cada F9, com o cartão
-        # já desenhado no primeiro show(). Nesta máquina o DWM só apresenta
-        # de forma confiável a PRIMEIRA mapeação de uma janela (com
-        # conteúdo); janela mapeada vazia e depois remapeada falha. Custo:
-        # criação de janela (milissegundos) apenas quando há cartões.
+        self._bridge.quit_app.connect(self._shutdown)
+        # Nenhuma janela no arranque: elas são criadas a cada F9, já com o
+        # cartão desenhado no primeiro show(). Custo: criação de janela
+        # (milissegundos) apenas quando há cartões.
         self._screens: dict[str, QScreen] = {}
         for screen in self._app.screens():
             self._screens[screen.name()] = screen
-        self._windows: dict[str, _MonitorWindow] = {}
+        # monitor -> janelas (agora 1 janela por cartão; ver _CardWindow).
+        self._windows: dict[str, list[_CardWindow]] = {}
 
     # -- API pública (segura para chamar de qualquer thread) ------------
     def publish(
@@ -300,6 +396,19 @@ class Overlay:
         self._app.exec()
 
     # -- internos (rodam na thread principal, chamados via sinal) -------
+    def _shutdown(self) -> None:
+        """Fecha as janelas e sai (chamado via sinal, na thread principal).
+
+        O dispose() marca _closing, pelo que o hideEvent do teardown não
+        gera WARNINGs falsos (o aviso é só para janelas escondidas por
+        FORA do app — o sinal de diagnóstico que interessa).
+        """
+        for wins in self._windows.values():
+            for win in wins:
+                win.dispose()
+        self._windows.clear()
+        self._app.quit()
+
     def _show_cards(self, payload: tuple) -> None:
         items, scope = payload
         # O F9 afeta só o monitor escaneado (scope). Sem scope (chamadas
@@ -317,45 +426,35 @@ class Overlay:
         else:
             touched = set(self._screens)
 
-        # Descarta janelas antigas SÓ nos monitores afetados: a única
-        # forma confiável de apresentar nesta máquina é uma mapeação nova
-        # com o cartão já desenhado (ver __init__), e os cartões dos
-        # demais monitores continuam no ar.
+        # Descarta as janelas antigas SÓ nos monitores afetados: os
+        # cartões dos demais monitores continuam no ar.
         for name in touched:
-            win = self._windows.pop(name, None)
-            if win is not None:
-                win._stop_keepalive()
-                win.close()
-                win.deleteLater()
+            for win in self._windows.pop(name, []):
+                win.dispose()
 
-        by_window: dict[str, list[CardItem]] = {name: [] for name in touched}
+        # 1 janela por cartão, ancorada na bbox (ver _CardWindow). O
+        # monitor de referência é o que contém o centro da bbox; fallback:
+        # o primeiro monitor afetado.
+        fallback = next(iter(touched), None)
         for item in items:
             cx = (item.bbox[0] + item.bbox[2]) // 2
             cy = (item.bbox[1] + item.bbox[3]) // 2
-            target = next(
+            name = next(
                 (
-                    name
-                    for name in touched
-                    if self._in_geometry(self._screens[name].geometry(), cx, cy)
+                    n
+                    for n in touched
+                    if self._in_geometry(self._screens[n].geometry(), cx, cy)
                 ),
-                None,
+                fallback,
             )
-            if target is None:  # fallback: primeiro monitor afetado
-                target = next(iter(by_window))
-            by_window[target].append(item)
+            if name is None:  # sem monitores conhecidos (defensivo)
+                continue
+            win = _CardWindow(self._screens[name], item)
+            self._windows.setdefault(name, []).append(win)
+            # Pulsos iniciais + keepalive de 1 s enquanto o cartão estiver
+            # no ar (timers filhos da janela).
+            win.start_presenting()
 
-        for name, bucket in by_window.items():
-            if bucket:
-                win = _MonitorWindow(self._screens[name], bucket)
-                self._windows[name] = win
-                # Pulsos de reafirmação: o DWM desta máquina só
-                # reapresenta a superfície com um curto atraso após o
-                # paint do cartão. Três pulsos cobrem até 2 s.
-                for delay in (300, 1000, 2000):
-                    QTimer.singleShot(delay, win.reassert)
-                # Mantém reapresentando enquanto os cartões estiverem no
-                # ar (o DWM pode parar de apresentar a janela de novo).
-                win._start_keepalive()
         if items:
             logger.info("Overlay: %d cartão(ões) no ar", len(items))
         elif scope is not None:
