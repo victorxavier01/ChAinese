@@ -11,9 +11,6 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# Quantas vezes repetir o grab do mss: o BitBlt de tela (DC de DISPLAY)
-# desta máquina falha intermitentemente (DWM instável). Uma captura única
-# perderia o F9; o retry curto recupera em ~2 s sem atrasar o pipeline.
 _GRAB_ATTEMPTS = 5
 _GRAB_RETRY_DELAY_S = 0.4
 

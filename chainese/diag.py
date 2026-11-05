@@ -1,19 +1,3 @@
-"""
-Diagnóstico do overlay — evidência de apresentação (investigação DWM).
-
-Módulo puramente observacional: NENHUMA mudança de comportamento do
-overlay. Só gera evidência para o incidente "o cartão aparece e some":
-
-  - screenshots do monitor com o cartão em t=0,4/1,5/5 s após o publish:
-    o PNG mostra se o cartão esteve realmente apresentado e quando
-    deixou de estar;
-  - retenção limitada (os N mais recentes) para debug/ não crescer.
-
-Os grabs rodam em threads daemon curtas, cada uma com a sua instância
-mss: o mss não é thread-safe (1 instância = 1 DC de GDI) e a doutrina
-do app é nunca bloquear a thread principal do Qt com I/O.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -47,15 +31,13 @@ def _grab(region: dict, tag: str, delay_s: float) -> None:
     if delay_s > 0:
         time.sleep(delay_s)
     try:
-        import mss  # tardio: só quando o diagnóstico é solicitado
+        import mss
 
         _DEBUG_DIR.mkdir(exist_ok=True)
         ts = time.strftime("%Y%m%d_%H%M%S")
         path = _DEBUG_DIR / f"overlay_{ts}_{tag}.png"
         with mss.mss() as sct:
-            # O top/left do desktop virtual PODE ser negativo (nesta
-            # máquina top=-3): coordenada negativa falha no BitBlt —
-            # converter para a origem do DC, como em capture.py.
+            # O top/left do desktop virtual PODE ser negativo (multi-monitor), por isso subtrai o top/left do monitor 0.
             virt = sct.monitors[0]
             grab = {
                 "left": region["left"] - virt["left"],

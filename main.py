@@ -40,7 +40,7 @@ def print_report(
     print(f"  F9  |  {len(results)} linha(s) em chinês  |  {elapsed_ms:.0f} ms no total")
     print("=" * width)
     if not results:
-        print("  (nenhum texto chinês detetado)")
+        print("  (nenhum texto chinês detectado)")
     for idx, item in enumerate(results, start=1):
         pinyin = pinyin_line(item.text)
         print(f"  [{idx}] {item.text}")
@@ -59,7 +59,7 @@ def _translate_results(
     """Traduz as linhas únicas (com cache).
 
     Se o Ollama cair no meio da sessão, a tradução é desativada pelo resto
-    da execução (degradação graciosa, sem crash, aviso único).
+    da execução.
     """
     translations: dict[str, str] = {}
     if not translator.available:
@@ -194,8 +194,6 @@ def main() -> int:
             t0 = time.perf_counter()
             frame = capturer.capture()
             ox, oy = capturer.frame_origin
-            # Monitor escaneado (coordenadas globais): o overlay atualiza
-            # só este monitor e preserva os cartões dos demais.
             reg = capturer.region
             scope = (reg["left"], reg["top"], reg["width"], reg["height"])
             results = recognizer.recognize(frame, origin=(ox, oy))
@@ -206,8 +204,6 @@ def main() -> int:
             _publish_overlay(overlay, results, translations, scope, vocab)
 
         except Exception:
-            # logger.exception: traceback completo no log (diagnóstico sem
-            # nova ronda de re-testes se voltar a falhar).
             logger.exception("Erro na captura/OCR")
 
         finally:
@@ -230,15 +226,12 @@ def main() -> int:
         logger.info("Fechando...")
         overlay.quit()
 
-    # Hotkeys globais SEM Admin (Win32 RegisterHotKey). O callback roda na
-    # thread de mensagens do HotkeyManager, por isso on_capture só lança
-    # worker (nunca bloqueia a thread das hotkeys durante o OCR).
     hotkeys = HotkeyManager(
         [
-            (VK_F9, 0, on_capture),       # F9 -> captura + OCR
-            (VK_F8, 0, on_prev_page),     # F8 -> página anterior do painel
-            (VK_F10, 0, on_next_page),    # F10 -> página seguinte do painel
-            (VK_Q, MOD_CONTROL, on_quit),  # Ctrl+Q -> sair
+            (VK_F9, 0, on_capture),
+            (VK_F8, 0, on_prev_page),
+            (VK_F10, 0, on_next_page),
+            (VK_Q, MOD_CONTROL, on_quit),
         ]
     )
 
