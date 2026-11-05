@@ -35,7 +35,7 @@ def screenshot_region(region: dict, tag: str, delay_s: float = 0.0) -> None:
 
     :param region: {"left", "top", "width", "height"} em coordenadas do
                    desktop virtual (a mesma base do mss/`ScreenCapturer`).
-    :param tag: sufixo do nome do ficheiro (ex.: "t1500").
+    :param tag: sufixo do nome do arquivo (ex.: "t1500").
     :param delay_s: atraso antes do grab (capturar o t+X após o publish).
     """
     threading.Thread(

@@ -53,8 +53,8 @@ class DetectedText:
 
     @property
     def bbox(self) -> str:
-        """Bounding box axis-aligned "x0,y0-x1,y1" — com captura a ecrã
-        inteiro, estas são diretamente coordenadas de ecrã."""
+        """Bounding box axis-aligned "x0,y0-x1,y1" — com captura a tela
+        inteira, estas são diretamente coordenadas da tela."""
         x0, y0 = self.box.min(axis=0)
         x1, y1 = self.box.max(axis=0)
         return f"({x0},{y0})-({x1},{y1})"
@@ -129,7 +129,7 @@ class TextRecognizer:
                 use_doc_orientation_classify=False,  # sem classificação de rotação
                 use_doc_unwarping=False,             # sem "unwarping" de perspetiva
                 use_textline_orientation=False,     # sem rotação por linha
-                # ---- thresholds de deteção (calibráveis em config.py) ----
+                # ---- thresholds de detecção (calibráveis em config.py) ----
                 text_det_thresh=config.DET_THRESH,
                 text_det_box_thresh=config.BOX_THRESH,
                 text_rec_score_thresh=config.REC_SCORE_MIN,

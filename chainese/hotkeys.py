@@ -21,7 +21,9 @@ MOD_WIN = 0x0008
 MOD_NOREPEAT = 0x0400  # ignora auto-repeat (só relevante em modo register)
 
 # Códigos de tecla virtual (VK_*) as que usamos
-VK_F9 = 0x78  # VK_F1 = 0x70 ... VK_F10 = 0x79
+VK_F8 = 0x77  # VK_F1 = 0x70 ... VK_F10 = 0x79
+VK_F9 = 0x78
+VK_F10 = 0x79
 VK_Q = 0x51
 
 # MOD_* -> VK correspondente (modo polling)
@@ -104,7 +106,7 @@ class HotkeyManager:
             return
 
         # Registo falhou (bloqueado nesta máquina) -> fallback polling.
-        # Limpa registos parciais para evitar dupla disparada.
+        # Limpa registros parciais para evitar dupla disparada.
         for idx in list(self._callbacks):
             user32.UnregisterHotKey(None, idx)
         self._callbacks.clear()
@@ -135,8 +137,8 @@ class HotkeyManager:
     def _run_register(self) -> None:
         """Registo (nesta thread) + pump da fila de mensagens.
 
-        Com hWnd=NULL o WM_HOTKEY chega à fila da thread que registou por
-        isso o registo e o pump têm de ser na MESMA thread.
+        Com hWnd=NULL o WM_HOTKEY chega à fila da thread que registrou por
+        isso o registro e o pump têm de ser na MESMA thread.
         """
         for idx, (vk, mods, callback) in enumerate(self._hotkeys, start=1):
             if self._stop.is_set():
@@ -165,7 +167,7 @@ class HotkeyManager:
                     self._callbacks[msg.wParam]()
             self._stop.wait(0.05)  # ~0% CPU; permite o stop() limpo
 
-        # Limpeza: unregister na thread que registou.
+        # Limpeza: unregister na thread que registrou.
         for idx in list(self._callbacks):
             user32.UnregisterHotKey(None, idx)
         logger.debug("HotkeyManager (register) parado.")
@@ -174,7 +176,7 @@ class HotkeyManager:
     # Modo polling (fallback GetAsyncKeyState)
     # ------------------------------------------------------------------
     def _run_polling(self) -> None:
-        """Polling do estado físico do teclado com deteção de rising edge."""
+        """Polling do estado físico do teclado com detecção de rising edge."""
         prev: dict[int, bool] = {}
         while not self._stop.is_set():
             for idx, (vk, mods, callback) in enumerate(self._hotkeys, start=1):

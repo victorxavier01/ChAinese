@@ -68,7 +68,7 @@ def pinyin_line(text: str) -> str:
 def vocab_words(lines: list[str], limit: int = 10) -> list[Word]:
     """Palavras únicas das linhas (ordem de 1ª ocorrência), só CJK.
 
-    Alimenta o painel de vocabulário do overlay (canto inferior
+    Alimenta o painel de vocabulário do overlay (canto superior
     esquerdo): pontuação e ruído latino/numérico do OCR ficam de fora
     (só contam tokens com pelo menos um ideograma); o limite é porque o
     painel tem altura finita.

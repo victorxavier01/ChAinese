@@ -82,9 +82,9 @@ class Translator:
         self._timeout = timeout_s
         self._cache: OrderedDict[str, str] = OrderedDict()
         self._max_cache = max_cache
-        # Sessao com trust_env=False: nesta maquina o proxy do sistema
-        # (registrado na registry pela MDM) intercepta ate o trafego local
-        # e devolve 503 para 127.0.0.1. Ignorar o ambiente deixa a conexao
+        # Sessão com trust_env=False: nesta máquina o proxy do sistema
+        # (registrado na registry pela MDM) intercepta até o tráfego local
+        # e devolve 503 para 127.0.0.1. Ignorar o ambiente deixa a conexão
         # com o Ollama ir direto.
         self._session = requests.Session()
         self._session.trust_env = False
@@ -141,18 +141,33 @@ class Translator:
         return translation
 
     def translate_words(self, words: list[str]) -> dict[str, str]:
-        """Traduz palavras únicas (vocabulário) em UMA chamada em lote.
+        """Traduz palavras únicas (vocabulário) em LOTES pequenos.
 
         :param words: palavras já únicas e ordenadas (ver
                       segment.vocab_words).
         :return: mapa palavra -> tradução. Palavras que o modelo não
                  respondeu (ou ecoou em chinês) ficam fora do mapa — o
                  painel mostra "?" para elas, sem parecer erro de layout.
-        Palavras em cache nem vão no lote. Lança OllamaOffline se o
+        Palavras em cache nem vão nos lotes. Lança OllamaOffline se o
         servidor cair (o painel segue com palavra + pinyin).
+
+        FATIADO em lotes de config.VOCAB_WORDS_BATCH: com VOCAB_MAX_WORDS
+        (100) numa chamada única, a resposta (~500-800 tokens) estourava
+        o timeout de 30 s — medido: 98 palavras caíam em OllamaOffline e
+        a sessão inteira perdia tradução ("as palavras só retornam ?").
+        Lotes de 20 respondem em segundos; a falha de UM lote afeta só
+        aquele lote (as palavras dele ficam "?"), não a sessão.
         """
         if not words:
             return {}
+        out: dict[str, str] = {}
+        for start in range(0, len(words), config.VOCAB_WORDS_BATCH):
+            batch = words[start : start + config.VOCAB_WORDS_BATCH]
+            out.update(self._translate_words_batch(batch))
+        return out
+
+    def _translate_words_batch(self, words: list[str]) -> dict[str, str]:
+        """UMA chamada em lote para um pedaço pequeno (<= 20 palavras)."""
         fresh: list[str] = []
         for word in words:
             if self._cache_get(word) is None:
@@ -168,7 +183,11 @@ class Translator:
                 json={
                     "model": self._model,
                     "stream": False,
-                    "options": {"temperature": 0.1, "num_predict": 200},
+                    # 500 (vs 200 das linhas): um lote de 20 palavras gera
+                    # ~100-160 tokens de output; 500 cobre com folga. O
+                    # teto é só um limite — a geração para no fim natural
+                    # da lista.
+                    "options": {"temperature": 0.1, "num_predict": 500},
                     "messages": [
                         {"role": "system", "content": _WORDS_SYSTEM_PROMPT},
                         {"role": "user", "content": numbered},

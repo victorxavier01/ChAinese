@@ -10,6 +10,8 @@ from chainese.hotkeys import (
     HotkeyError,
     HotkeyManager,
     MOD_CONTROL,
+    VK_F10,
+    VK_F8,
     VK_F9,
     VK_Q,
 )
@@ -215,6 +217,15 @@ def main() -> int:
 
         threading.Thread(target=run_capture, name="capture-ocr", daemon=True).start()
 
+    def on_prev_page() -> None:
+        # F8: página anterior do painel. Ação leve (sem OCR/tradução):
+        # page_vocab é thread-safe (sinal queued), não precisa do busy lock.
+        overlay.page_vocab(-1)
+
+    def on_next_page() -> None:
+        # F10: página seguinte do painel (idêntico ao F8).
+        overlay.page_vocab(+1)
+
     def on_quit() -> None:
         logger.info("Fechando...")
         overlay.quit()
@@ -224,7 +235,9 @@ def main() -> int:
     # worker (nunca bloqueia a thread das hotkeys durante o OCR).
     hotkeys = HotkeyManager(
         [
-            (VK_F9, 0, on_capture),        # F9 -> captura + OCR
+            (VK_F9, 0, on_capture),       # F9 -> captura + OCR
+            (VK_F8, 0, on_prev_page),     # F8 -> página anterior do painel
+            (VK_F10, 0, on_next_page),    # F10 -> página seguinte do painel
             (VK_Q, MOD_CONTROL, on_quit),  # Ctrl+Q -> sair
         ]
     )
@@ -233,10 +246,10 @@ def main() -> int:
         hotkeys.start()
 
     except HotkeyError as exc:
-        logger.error("Não foi possível registar as hotkeys: %s", exc)
+        logger.error("Não foi possível registrar as hotkeys: %s", exc)
         return 1
 
-    logger.info("Pronto: F9 = captura + OCR | Ctrl+Q = sair")
+    logger.info("Pronto: F9 = captura + OCR | F8/F10 = páginas do painel | Ctrl+Q = sair")
     try:
         overlay.run()  # thread principal: loop de eventos do Qt
 

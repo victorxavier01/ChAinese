@@ -20,7 +20,7 @@ _GRAB_RETRY_DELAY_S = 0.4
 Region = dict[str, int]  # {"left", "top", "width", "height"}
 
 # ---------------------------------------------------------------------------
-# Win32: posição do rato (para escolher o monitor ativo)
+# Win32: posição do mouse (para escolher o monitor ativo)
 # ---------------------------------------------------------------------------
 user32 = ctypes.windll.user32
 
@@ -34,7 +34,7 @@ user32.GetCursorPos.restype = wintypes.BOOL
 
 
 def _cursor_pos() -> tuple[int, int]:
-    """Posição global do rato (coordenadas do desktop virtual)."""
+    """Posição global do mouse (coordenadas do desktop virtual)."""
     pt = _POINT()
     if not user32.GetCursorPos(ctypes.byref(pt)):
         # Fallback defensivo: canto superior esquerdo.
@@ -52,7 +52,7 @@ class ScreenCapturer:
     def __init__(self, region: Region | None = None) -> None:
         """
         :param region: região em pixels {"left","top","width","height"},
-                       ou None para o monitor onde está o rato no momento
+                       ou None para o monitor onde está o mouse no momento
                        da captura (o monitor "ativo").
         :raises CaptureError: se a região fixa não intersectar nenhum monitor.
         """
@@ -177,9 +177,9 @@ class ScreenCapturer:
         return region
 
     def _monitor_at_cursor(self, physical: list[Region]) -> Region:
-        """O monitor que contém o rato (é onde o jogo está a ser visto).
+        """O monitor que contém o mouse (é onde o jogo está sendo visto).
 
-        Fallback: o monitor primário (rato na borda do desktop virtual ou
+        Fallback: o monitor primário (mouse na borda do desktop virtual ou
         falha da API).
         """
         cx, cy = _cursor_pos()
